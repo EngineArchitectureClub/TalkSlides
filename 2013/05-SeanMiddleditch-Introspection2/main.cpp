@@ -88,10 +88,12 @@ template <typename T, typename U> void test_rw_member(T& obj, const char* name, 
 {
 	auto m = Meta::Get(obj)->FindMember(name);
 	assert(m != nullptr);
-	Meta::Any a(&value);
+	Meta::AnyRef a(&value);
+	assert(m->CanSet(&obj, a));
 	m->Set(&obj, a);
 	a = nullptr;
 	U test;
+	assert(m->CanGet(&obj, &test));
 	m->Get(&obj, &test);
 	assert(test == value);
 }
@@ -102,6 +104,7 @@ template <typename T, typename U> void test_ro_member(T& obj, const char* name, 
 	auto m = Meta::Get(obj)->FindMember(name);
 	assert(m != nullptr);
 	U test;
+	assert(m->CanGet(&obj, &test));
 	m->Get(&obj, &test);
 	assert(test == value);
 }
@@ -111,6 +114,7 @@ template <typename T> void test_method(T& obj, const char* name)
 {
 	auto m = Meta::Get(obj)->FindMethod(name);
 	assert(m != nullptr);
+	assert(m->CanCall(&obj, 0, nullptr));
 	m->Call(&obj, 0, nullptr);
 }
 
@@ -119,8 +123,9 @@ template <typename T, typename R, typename P> void test_method(T& obj, const cha
 {
 	auto m = Meta::Get(obj)->FindMethod(name);
 	assert(m != nullptr);
-	Meta::Any argv[1] = { &p };
+	Meta::AnyRef argv[1] = { &p };
 	R test;
+	assert(m->CanCall(&obj, &test, 1, argv));
 	m->Call(&obj, &test, 1, argv);
 	assert(test == value);
 }
@@ -130,8 +135,9 @@ template <typename T, typename R, typename P, typename P2> void test_method(T& o
 {
 	auto m = Meta::Get(obj)->FindMethod(name);
 	assert(m != nullptr);
-	Meta::Any argv[2] = { &p, &p2 };
+	Meta::AnyRef argv[2] = { &p, &p2 };
 	R test;
+	assert(m->CanCall(&obj, &test, 2, argv));
 	m->Call(&obj, &test, 2, argv);
 	assert(test == value);
 }
@@ -149,9 +155,9 @@ int main(int argc, char* argv[])
 	test_rw_member(b, "b", 191.73f);
 	test_rw_member(b, "c", -0.5f);
 	b.setD(91317);
-	//test_ro_member(b, "d", b.getD());
+	test_ro_member(b, "d", b.getD());
 	b.setD(0xDEADBEEF);
-	//test_method(b, "gaz");
+	test_method(b, "gaz");
 	test_method(b, "foo");
 	test_ro_member(b, "a", -21);
 	test_method(b, "gar", -1.f, -0.5f);
