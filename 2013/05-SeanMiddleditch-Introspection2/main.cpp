@@ -4,8 +4,10 @@
 
 #include "Meta.h"
 
+#include <cassert>
+
 // a test class
-class A
+class A1
 {
 	int a;
 	float b;
@@ -24,8 +26,20 @@ public:
 	META_DECLARE(A);
 };
 
+// another test
+class A2
+{
+	int d;
+
+public:
+	int getD() const { return d; }
+	void setD(int _) { d = _; }
+
+	void gaz() { assert(d == 0xDEADBEEF); }
+};
+
 // another test, with derivation
-class B : public A
+class B : public A1, public A2
 {
 	float gar(float m) { return c += m; }
 
@@ -45,74 +59,104 @@ namespace TestC
 }
 
 // create m_Type infos
-META_TYPE(A)
-	.member("a", &A::a) // note that we can bind private m_Members with this style of Get
-	.member("b", &A::b)
-	.member("a2", &A::getA)
-	.member("a3", &A::getA, nullptr)
-	.member("a4", &A::getA, &A::setA)
-	.method("foo", &A::foo)
-	.method("bar", &A::bar)
-	.method("baz", &A::baz);
+META_DEFINE(A1)
+	.member("a", &A1::a) // note that we can bind private m_Members with this style of Get
+	.member("b", &A1::b)
+	.member("a2", &A1::getA)
+	.member("a3", &A1::getA, nullptr)
+	.member("a4", &A1::getA, &A1::setA)
+	.method("foo", &A1::foo)
+	.method("bar", &A1::bar)
+	.method("baz", &A1::baz);
 
-META_TYPE(B)
-	.base<A>()
+META_DEFINE_EXTERN(A2)
+	.member("d", &A2::getD, &A2::setD)
+	.method("gaz", &A2::gaz);
+
+META_DEFINE(B)
+	.base<A1>()
+	.base<A2>()
 	.member("c", &B::c)
 	.method("gar", &B::gar);
 
-META_EXTERN(TestC::C)
+META_DEFINE_EXTERN(TestC::C)
 	.member("x", &TestC::C::x)
 	.member("y", &TestC::C::y);
+
+// tests that a value can be round-tripped into a member variable
+template <typename T, typename U> void test_rw_member(T& obj, const char* name, const U& value)
+{
+	auto m = Meta::Get(obj)->FindMember(name);
+	assert(m != nullptr);
+	Meta::Any a(&value);
+	m->Set(&obj, a);
+	a = nullptr;
+	U test;
+	m->Get(&obj, &test);
+	assert(test == value);
+}
+
+// tests that a member variable has a particular value
+template <typename T, typename U> void test_ro_member(T& obj, const char* name, const U& value)
+{
+	auto m = Meta::Get(obj)->FindMember(name);
+	assert(m != nullptr);
+	U test;
+	m->Get(&obj, &test);
+	assert(test == value);
+}
+
+// tests that a method with no return value or parameters can be invoked
+template <typename T> void test_method(T& obj, const char* name)
+{
+	auto m = Meta::Get(obj)->FindMethod(name);
+	assert(m != nullptr);
+	m->Call(&obj, 0, nullptr);
+}
+
+// tests that a method with one parameter results in a specific return value
+template <typename T, typename R, typename P> void test_method(T& obj, const char* name, const R& value, const P& p)
+{
+	auto m = Meta::Get(obj)->FindMethod(name);
+	assert(m != nullptr);
+	Meta::Any argv[1] = { &p };
+	R test;
+	m->Call(&obj, &test, 1, argv);
+	assert(test == value);
+}
+
+// tests that a method with two parameters results in a specific return value
+template <typename T, typename R, typename P, typename P2> void test_method(T& obj, const char* name, const R& value, const P& p, const P2& p2)
+{
+	auto m = Meta::Get(obj)->FindMethod(name);
+	assert(m != nullptr);
+	Meta::Any argv[2] = { &p, &p2 };
+	R test;
+	m->Call(&obj, &test, 2, argv);
+	assert(test == value);
+}
 
 // test routine
 int main(int argc, char* argv[])
 {
 	B b;
-	b.setA(12);
-	int i;
-	assert(::Meta::Get(&b)->FindMember("a")->IsMutable());
-	::Meta::Get(&b)->FindMember("a")->Get(&b, &i);
-	assert(i == 12);
-	i = 0;
-	assert(!::Meta::Get(&b)->FindMember("a2")->IsMutable());
-	::Meta::Get(&b)->FindMember("a2")->Get(&b, &i);
-	assert(i == 12);
-	i = 0;
-	assert(!::Meta::Get(&b)->FindMember("a3")->IsMutable());
-	::Meta::Get(&b)->FindMember("a3")->Get(&b, &i);
-	assert(i == 12);
-	i = 0;
-	assert(::Meta::Get(&b)->FindMember("a4")->IsMutable());
-	::Meta::Get(&b)->FindMember("a4")->Get(&b, &i);
-	assert(i == 12);
-	float method = 7.f;
-	::Meta::Get(&b)->FindMember("b")->Set(&b, &method);
-	assert(b.getB() == 7.f);
-	b.setA(0);
-	i = 99;
-	::Meta::Get(&b)->FindMember("a4")->Set(&b, &i);
-	assert(b.getA() == 99);
-	::Meta::Get(&b)->FindMethod("foo")->Call(&b, 0, 0);
-	assert(b.getA() == 297);
-	b.c = 17.f;
-	method = 7.f;
-	::Meta::Any args[2] = { ::Meta::ToAny(&method), ::Meta::ToAny(nullptr) };
-	::Meta::Get(&b)->FindMethod("gar")->Call(&b, &method, 1, args);
-	assert(b.c == 24.f);
-	method = 11.f;
-	args[0] = ::Meta::ToAny(&method);
-	assert(::Meta::Get(&b)->FindMethod("bar")->CanCall(&b, &i, 1, args));
-	::Meta::Get(&b)->FindMethod("bar")->Call(&b, &i, 1, args);
-	assert(i == 5);
-	char is_const = 7;
-	double d = 5.0;
-	args[0] = ::Meta::ToAny(&d);
-	args[1] = ::Meta::ToAny(&is_const);
-	assert(::Meta::Get(&b)->FindMethod("baz")->CanCall(&b, &method, 2, args));
-	::Meta::Get(&b)->FindMethod("baz")->Call(&b, &method, 2, args);
-	assert(method == 0.f);
-	d = 20.0;
-	::Meta::Get(&b)->FindMethod("baz")->Call(&b, &method, 2, args);
-	assert(method == 10.f);
-	assert (!::Meta::Get(&b)->FindMethod("foo")->CanCall(&b, &method, 2, args));
+	test_rw_member(b, "a", 12);
+	b.setA(31);
+	test_ro_member(b, "a2", b.getA());
+	b.setA(43);
+	test_ro_member(b, "a3", b.getA());
+	test_rw_member(b, "a4", -7);
+	test_rw_member(b, "b", 191.73f);
+	test_rw_member(b, "c", -0.5f);
+	b.setD(91317);
+	//test_ro_member(b, "d", b.getD());
+	b.setD(0xDEADBEEF);
+	//test_method(b, "gaz");
+	test_method(b, "foo");
+	test_ro_member(b, "a", -21);
+	test_method(b, "gar", -1.f, -0.5f);
+	test_ro_member(b, "c", -1.f);
+	test_method(b, "bar", 5, 11.f);
+	test_method(b, "baz", 0.f, 5.0, (char)7);
+	test_method(b, "baz", 10.f, 20.0, (char)7);
 }

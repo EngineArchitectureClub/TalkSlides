@@ -5,7 +5,7 @@
 #include "Meta.h"
 
 // m_Type defitions for some primitive types we use
-META_EXTERN(int);
-META_EXTERN(float);
-META_EXTERN(double);
-META_EXTERN(char);
+META_DEFINE_EXTERN(int);
+META_DEFINE_EXTERN(float);
+META_DEFINE_EXTERN(double);
+META_DEFINE_EXTERN(char);
