@@ -96,8 +96,6 @@ namespace Meta
 		{
 			Void, //!< This is a void value and may not be access at all
 			Value, //!< The encoded value is not a by-reference type but is a by-copy type and may not be reassigned.
-			Reference, //!< The encoded value is a non-const reference and may be assigned to.
-			ConstReference, //!< The encoded value is a const reference and may not be assigned to.
 			Pointer, //<! The encoded value is a pointer and assignments point to a new value, and dereferencing allows changing the value.
 			ConstPointer, //<! The encoded value is a pointer and assignments point to a new value, but dereferencing does not allow changing the value.
 		};
@@ -121,10 +119,10 @@ namespace Meta
 		template <typename Type> struct make_type_record<const Type*> { static const TypeRecord type() { return TypeRecord(Get<Type>(), TypeRecord::ConstPointer); } };
 
 		//! \brief Construct a TypeRecord for a specific type by reference
-		template <typename Type> struct make_type_record<Type&> { static const TypeRecord type() { return TypeRecord(Get<Type>(), TypeRecord::Reference); } };
+		template <typename Type> struct make_type_record<Type&> { static const TypeRecord type() { return TypeRecord(Get<Type>(), TypeRecord::Pointer); } };
 
 		//! \brief Construct a TypeRecord for a specific type by const reference
-		template <typename Type> struct make_type_record<const Type&> { static const TypeRecord type() { return TypeRecord(Get<Type>(), TypeRecord::ConstReference); } };
+		template <typename Type> struct make_type_record<const Type&> { static const TypeRecord type() { return TypeRecord(Get<Type>(), TypeRecord::ConstPointer); } };
 
 		//! \brief Construct a TypeRecord for void
 		template <> struct make_type_record<void> { static const TypeRecord type() { return TypeRecord(nullptr, TypeRecord::Void); } };
@@ -145,8 +143,8 @@ namespace Meta
 		TypeRecord m_TypeRecord; //!< Type record information stored in this Any
 
 	public:
-		//! \brief Checks if the value is const when dereferenced.
-		bool IsConst() const { return m_TypeRecord.qualifier == TypeRecord::ConstReference || m_TypeRecord.qualifier == TypeRecord::ConstPointer; }
+		//! \brief Checks if the value should be considered a constant when dereferenced.
+		bool IsConst() const { return m_TypeRecord.qualifier != TypeRecord::Pointer; }
 
 		//! \brief Gets the TypeInfo for the value stored in the Any, if any
 		const TypeInfo* GetType() const { return m_TypeRecord.type; }
@@ -160,8 +158,6 @@ namespace Meta
 			switch (m_TypeRecord.qualifier)
 			{
 			case TypeRecord::Value: return const_cast<char*>(m_Data);
-			case TypeRecord::Reference:
-			case TypeRecord::ConstReference:
 			case TypeRecord::Pointer:
 			case TypeRecord::ConstPointer:
 				return m_Ptr;
@@ -306,11 +302,11 @@ namespace Meta
 		const TypeInfo* GetOwner() const { return m_Owner; }
 
 		//! \brief Get the TypeInfo of the return value.
-		virtual const TypeInfo* GetReturnType() const = 0;
+		virtual TypeRecord GetReturnType() const = 0;
 
 		//! \brief Get the TypeInfo of the paramater at the ith index.
 		//! \brief i The index of the parameter, starting from 0.
-		virtual const TypeInfo* GetParamType(int i) const = 0;
+		virtual TypeRecord GetParamType(int i) const = 0;
 
 		//! \brief Get the number of parameters of the method.
 		virtual int GetArity() const = 0;
@@ -514,8 +510,13 @@ namespace Meta
 			return false;
 
 		for (int i = 0; i < argc; ++i)
-			if (argv[i].GetType() != GetParamType(i))
+		{
+			auto tr = GetParamType(i);
+			if (argv[i].GetType() != tr.type)
 				return false;
+			if (argv[i].IsConst() && tr.qualifier == TypeRecord::Pointer)
+				return false;
+		}
 
 		return true;
 	}
@@ -605,9 +606,9 @@ namespace Meta
 			ReturnType (Type::*method)();
 
 		public:
-			virtual const TypeInfo* GetReturnType() const override { return Get<ReturnType>(); }
+			virtual TypeRecord GetReturnType() const override { return internal::make_type_record<ReturnType>::type(); }
 
-			virtual const TypeInfo* GetParamType(int name) const override { return nullptr; }
+			virtual TypeRecord GetParamType(int name) const override { return TypeRecord(); }
 
 			virtual int GetArity() const override { return 0; }
 
@@ -641,9 +642,9 @@ namespace Meta
 			ReturnType (Type::*method)(ParamType0);
 
 		public:
-			virtual const TypeInfo* GetReturnType() const override { return Get<ReturnType>(); }
+			virtual TypeRecord GetReturnType() const override { return internal::make_type_record<ReturnType>::type(); }
 
-			virtual const TypeInfo* GetParamType(int name) const override { if (name == 0) return Get<ParamType0>(); else return nullptr; }
+			virtual TypeRecord GetParamType(int name) const override { if (name == 0) return internal::make_type_record<ParamType0>::type(); else return TypeRecord(); }
 
 			virtual int GetArity() const override { return 1; }
 
@@ -677,9 +678,9 @@ namespace Meta
 			ReturnType (Type::*method)(ParamType0, ParamType1);
 
 		public:
-			virtual const TypeInfo* GetReturnType() const override { return Get<ReturnType>(); }
+			virtual TypeRecord GetReturnType() const override { return internal::make_type_record<ReturnType>::type(); }
 
-			virtual const TypeInfo* GetParamType(int name) const override { if (name == 0) return Get<ParamType0>(); else if (name == 1) return Get<ParamType1>(); else return nullptr; }
+			virtual TypeRecord GetParamType(int name) const override { if (name == 0) return internal::make_type_record<ParamType0>::type(); else if (name == 1) return internal::make_type_record<ParamType1>::type(); else return TypeRecord(); }
 
 			virtual int GetArity() const override { return 2; }
 
