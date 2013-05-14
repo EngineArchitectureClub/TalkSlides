@@ -97,11 +97,11 @@ template <typename T, typename U> static void test_rw_member(T& obj, const char*
 {
 	auto m = Meta::Get(obj)->FindMember(name);
 	assert(m != nullptr);
-	Meta::Any a = Meta::make_any(&value);
-	assert(m->CanSet(Meta::make_any(&obj), a));
-	m->Set(Meta::make_any(&obj), a);
-	assert(m->CanGet(Meta::make_any(&obj)));
-	U test = Meta::any_cast<U>(m->Get(Meta::make_any(&obj)));
+	Meta::Any a(&value);
+	assert(m->CanSet(&obj, a));
+	m->Set(&obj, a);
+	assert(m->CanGet(&obj));
+	U test = Meta::any_cast<U>(m->Get(&obj));
 	assert(test == value);
 }
 
@@ -110,8 +110,8 @@ template <typename T, typename U> static void test_ro_member(T& obj, const char*
 {
 	auto m = Meta::Get(obj)->FindMember(name);
 	assert(m != nullptr);
-	assert(m->CanGet(Meta::make_any(&obj)));
-	U test = Meta::any_cast<U>(m->Get(Meta::make_any(&obj)));
+	assert(m->CanGet(&obj));
+	U test = Meta::any_cast<U>(m->Get(&obj));
 	assert(test == value);
 }
 
@@ -120,8 +120,8 @@ template <typename T> static void test_method(T& obj, const char* name)
 {
 	auto m = Meta::Get(obj)->FindMethod(name);
 	assert(m != nullptr);
-	assert(m->CanCall(Meta::make_any(&obj), 0, nullptr));
-	m->Call(Meta::make_any(&obj), 0, nullptr);
+	assert(m->CanCall(&obj, 0, nullptr));
+	m->Call(&obj, 0, nullptr);
 }
 
 // tests that a method with one parameter results in a specific return value
@@ -129,9 +129,9 @@ template <typename T, typename R, typename P> static void test_method(T& obj, co
 {
 	auto m = Meta::Get(obj)->FindMethod(name);
 	assert(m != nullptr);
-	Meta::Any argv[1] = { Meta::make_any_ref(p) };
-	assert(m->CanCall(Meta::make_any(&obj), 1, argv));
-	auto r = m->Call(Meta::make_any(&obj), 1, argv);
+	Meta::Any argv[1] = { p };
+	assert(m->CanCall(&obj, 1, argv));
+	auto r = m->Call(&obj, 1, argv);
 	assert(r.GetType() == Meta::Get<R>());
 	assert(r.GetReference<R>() == value);
 }
@@ -141,24 +141,23 @@ template <typename T, typename R, typename P, typename P2> static void test_meth
 {
 	auto m = Meta::Get(obj)->FindMethod(name);
 	assert(m != nullptr);
-	Meta::Any argv[2] = { Meta::make_any(&p), Meta::make_any(&p2) };
-	assert(m->CanCall(Meta::make_any(&obj), 2, argv));
-	auto r = m->Call(Meta::make_any(&obj), 2, argv);
+	Meta::Any argv[2] = { &p, &p2 };
+	assert(m->CanCall(&obj, 2, argv));
+	auto r = m->Call(&obj, 2, argv);
 	assert(r.GetType() == Meta::Get<R>());
 	assert(r.GetReference<R>() == value);
 }
 
 static void test_any()
 {
-	Meta::Any a;
 	const int& ir = 0xDEADC0DE;
-	a = Meta::make_any_ref(ir);
-	assert(a.GetPointer() == &ir);
+	Meta::Any a1(&ir);
+	assert(a1.GetPointer() == &ir);
 
 	int i = 0xBEEF1337;
-	a = Meta::make_any(i);
-	assert(a.GetPointer() != &i);
-	assert(*reinterpret_cast<int*>(a.GetPointer()) == i);
+	Meta::Any a2(i);
+	assert(a2.GetPointer() != &i);
+	assert(*reinterpret_cast<int*>(a2.GetPointer()) == i);
 }
 
 static void test_meta()

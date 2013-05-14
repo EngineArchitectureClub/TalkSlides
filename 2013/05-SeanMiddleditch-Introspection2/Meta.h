@@ -72,6 +72,24 @@ namespace Meta
 			const TypeInfo* type; //!< The type being used
 			ptrdiff_t offset; //<! Offset that must be applied to convert a pointer from the deriving type to this base
 		};
+
+		//! \brief Knows how to destruct a type.
+		template <typename Type> struct destructor
+		{
+			static void destruct(void* obj) { static_cast<Type*>(obj)->~Type(); }
+		};
+
+		//! \brief Knows how to move a non-const type.
+		template <typename Type> struct mover
+		{
+			static void move(void* dst, void* src) { new (dst) Type(std::move(*static_cast<Type*>(src))); }
+		};
+
+		//! \brief Knows how to copy a type.
+		template <typename Type> struct mover<const Type*>
+		{
+			static void move(void* dst, void* src) { new (dst) Type(*static_cast<Type*>(src)); }
+		};
 	}
 
 	/*! \brief Get the TypeInfo for a specific type. */
@@ -127,7 +145,7 @@ namespace Meta
 		//! \brief Construct a TypeRecord for void
 		template <> struct make_type_record<void> { static const TypeRecord type() { return TypeRecord(nullptr, TypeRecord::Void); } };
 
-		template <typename Type> struct make_any_helper;
+		template <typename Type> struct make_any;
 	}
 
 	//! \brief Holds any type of value that can be handled by the introspection system
@@ -141,8 +159,57 @@ namespace Meta
 			void* m_Ptr; //!< convenien
 		};
 		TypeRecord m_TypeRecord; //!< Type record information stored in this Any
+		typedef void (*Destructor)(void*); //!< Type of the destructor function
+		typedef void (*Mover)(void*, void*); //!< Type of the mover function
+		Destructor m_Destructor; //!< Destructor for the bound type
+		Mover m_Mover; //!< Mover for the bound type
+
+		//! \brief Deleted copy constructor
+		Any(const Any&); // = delete
+		//! \brief Deleted copy assignment
+		void operator=(const Any&); // = delete
 
 	public:
+		//! \brief Constructs an Any that holds nothing
+		Any() : m_Ptr(nullptr), m_Destructor(nullptr), m_Mover(nullptr) { }
+
+		//! \brief Moves one Any into another
+		Any(Any&& src) : m_Destructor(nullptr) { *this = std::move(src); }
+
+		//! \brief Moves one Any into another
+		Any& operator=(Any&& src)
+		{
+			if (this != &src)
+			{
+				if (m_Destructor != nullptr)
+					m_Destructor(m_Data);
+				m_Mover = src.m_Mover;
+				m_Destructor = src.m_Destructor;
+				m_Mover(m_Data, src.m_Data);
+				if (m_Destructor != nullptr)
+					m_Destructor(src.m_Data);
+				src.m_Destructor = nullptr;
+				src.m_Mover = nullptr;
+			}
+			return *this;
+		}
+
+		//! \brief Constucts an Any that contains an object
+		template <typename Type> Any(const Type& obj) : m_TypeRecord(internal::make_type_record<Type>::type()), m_Destructor(&internal::destructor<Type>::destruct), m_Mover(&internal::mover<Type>::move) { static_assert(sizeof(Type) <= sizeof(m_Data), "Type is too large"); new (m_Data) Type(obj); }
+
+		//! \brief Constucts an Any that points at a non-const object
+		template <typename Type> Any(Type* obj) : m_Ptr(obj), m_TypeRecord(internal::make_type_record<Type*>::type()), m_Destructor(nullptr), m_Mover(&internal::mover<Type*>::move) { }
+
+		//! \brief Constucts an Any that points at a const object
+		template <typename Type> Any(const Type* obj) : m_Ptr(const_cast<Type*>(obj)), m_TypeRecord(internal::make_type_record<const Type*>::type()), m_Destructor(nullptr), m_Mover(&internal::mover<const Type*>::move) { }
+
+		//! \brief Cleans up the value stored in the Any if necessary
+		~Any()
+		{
+			if (m_Destructor != nullptr)
+				m_Destructor(m_Data);
+		}
+
 		//! \brief Checks if the value should be considered a constant when dereferenced.
 		bool IsConst() const { return m_TypeRecord.qualifier != TypeRecord::Pointer; }
 
@@ -174,23 +241,14 @@ namespace Meta
 		//! \brief Retrieves a reference to the type stored in this Any adjusted by base type offset if necessary
 		template <typename Type> Type& GetReference() const { return *static_cast<Type*>(GetPointer(Get<Type>())); }
 
-		template <typename Type> friend struct internal::make_any_helper;
+		template <typename Type> friend struct internal::make_any;
 	};
 
 	namespace internal
 	{
-		template <typename Type> struct make_any_helper { static Any make(Type value) { Any any; static_assert(sizeof(Type) <= sizeof(any.m_Data), "Type too large for by-value Any"); any.m_TypeRecord = make_type_record<Type>::type(); new (&any.m_Data) Type(value); return any; } };
-		template <typename Type> struct make_any_helper<Type&> { static Any make(Type& value) { Any any; any.m_TypeRecord = make_type_record<Type&>::type(); any.m_Ptr = const_cast<typename std::remove_const<Type>::type*>(&value); return any; } };
+		template <typename Type> struct make_any { static Any make(Type value) { return Any(value); } };
+		template <typename Type> struct make_any<Type&> { static Any make(Type& value) { return Any(&value); } };
 	}
-
-	//! \brief Convert any value into an Any
-	template <typename Type> Any make_any(Type value) { return internal::make_any_helper<typename std::remove_reference<Type>::type>::make(value); }
-
-	//! \brief Convert any value into an Any explicitly as a reference
-	template <typename Type> Any make_any_ref(Type& value) { return internal::make_any_helper<Type&>::make(value); }
-
-	//! \brief Convert any value into an Any explicitly as a reference
-	template <typename Type> Any make_any_ref(const Type& value) { return internal::make_any_helper<const Type&>::make(value); }
 
 	//! \brief Represents a member variable of a type. */
 	class Member
@@ -536,7 +594,7 @@ namespace Meta
 
 			virtual Any DoGet(const Any& obj) const override
 			{
-				return make_any<MemberType>(obj.GetPointer<Type>()->*m_Member);
+				return internal::make_any<MemberType>::make(obj.GetPointer<Type>()->*m_Member);
 			}
 
 			virtual void DoSet(const Any& obj, const Any& in) const override
@@ -558,7 +616,7 @@ namespace Meta
 
 			virtual Any DoGet(const Any& obj) const override
 			{
-				return internal::make_any_helper<decltype((static_cast<Type*>(nullptr)->*m_Getter)())>::make(((obj.GetPointer<Type>())->*m_Getter)());
+				return internal::make_any<decltype((static_cast<Type*>(nullptr)->*m_Getter)())>::make(((obj.GetPointer<Type>())->*m_Getter)());
 			}
 
 			virtual void DoSet(const Any& obj, const Any& in) const override { }
@@ -586,7 +644,7 @@ namespace Meta
 		{
 			static Any call(ReturnType (Type::*method)(), Type* obj, int argc, const Any* argv)
 			{
-				return internal::make_any_helper<ReturnType>::make((obj->*method)());
+				return internal::make_any<ReturnType>::make((obj->*method)());
 			}
 		};
 
@@ -622,7 +680,7 @@ namespace Meta
 		{
 			static Any call(ReturnType (Type::*method)(ParamType0), Type* obj, int argc, const Any* argv)
 			{
-				return internal::make_any_helper<ReturnType>::make((obj->*method)(any_cast<ParamType0>(argv[0])));
+				return internal::make_any<ReturnType>::make((obj->*method)(any_cast<ParamType0>(argv[0])));
 			}
 		};
 
@@ -658,7 +716,7 @@ namespace Meta
 		{
 			static Any call(ReturnType (Type::*method)(ParamType0, ParamType1), Type* obj, int argc, const Any* argv)
 			{
-				return internal::make_any_helper<ReturnType>::make((obj->*method)(any_cast<ParamType0>(argv[0]), any_cast<ParamType1>(argv[1])));
+				return internal::make_any<ReturnType>::make((obj->*method)(any_cast<ParamType0>(argv[0]), any_cast<ParamType1>(argv[1])));
 			}
 		};
 
