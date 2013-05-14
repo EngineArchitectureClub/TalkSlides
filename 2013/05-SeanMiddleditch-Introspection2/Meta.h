@@ -557,7 +557,7 @@ namespace Meta
 
 			virtual Any DoGet(const Any& obj) const override
 			{
-				return make_any<decltype((static_cast<Type*>(nullptr)->*m_Getter)())>(((obj.GetPointer<Type>())->*m_Getter)());
+				return internal::make_any_helper<decltype((static_cast<Type*>(nullptr)->*m_Getter)())>::make(((obj.GetPointer<Type>())->*m_Getter)());
 			}
 
 			virtual void DoSet(const Any& obj, const Any& in) const override { }
@@ -585,7 +585,7 @@ namespace Meta
 		{
 			static Any call(ReturnType (Type::*method)(), Type* obj, int argc, const Any* argv)
 			{
-				return make_any<ReturnType>((obj->*method)());
+				return internal::make_any_helper<ReturnType>::make((obj->*method)());
 			}
 		};
 
@@ -621,7 +621,7 @@ namespace Meta
 		{
 			static Any call(ReturnType (Type::*method)(ParamType0), Type* obj, int argc, const Any* argv)
 			{
-				return make_any<ReturnType>((obj->*method)(any_cast<ParamType0>(argv[0])));
+				return internal::make_any_helper<ReturnType>::make((obj->*method)(any_cast<ParamType0>(argv[0])));
 			}
 		};
 
