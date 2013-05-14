@@ -12,6 +12,8 @@ namespace Meta
 {
 	class TypeInfo;
 
+	//! Namespace containing helper code
+	//! \internal
 	namespace internal
 	{
 		template <typename T> struct MetaHolder;
@@ -67,8 +69,8 @@ namespace Meta
 		{
 			BaseRecord(const TypeInfo* t, ptrdiff_t o) : type(t), offset(o) { }
 
-			const TypeInfo* type;
-			ptrdiff_t offset;
+			const TypeInfo* type; //!< The type being used
+			ptrdiff_t offset; //<! Offset that must be applied to convert a pointer from the deriving type to this base
 		};
 	}
 
@@ -87,35 +89,112 @@ namespace Meta
 	/*! \brief Get the TypeInfo for a specific instance which has no GetMeta() method and hence no support for polymorphism of introspection. */
 	template <typename Type> typename std::enable_if<!std::is_pointer<Type>::value && !internal::has_get_meta<Type>::value, const TypeInfo*>::type Get(const Type&) { return Get<Type>(); }
 
-	//! \brief Simple wrapper for references (pointers) to allow passing values to and from introspection routines.
-	class AnyRef
+	//! \brief Represents a specific C++ type with qualifiers (const, reference, pointer, etc.)
+	struct TypeRecord
 	{
-		const TypeInfo* m_Type; //!< The type of the value being referenced.
-		void* m_Ref; //!< The reference pointer itself.
-		bool m_IsConst; //!< A flag to indicate if this reference should be treated as a constant and non-mutable.
+		enum Qualifier //!< Qualifiers (not quite correct C++ terminology) specifying how the type is used
+		{
+			Void, //!< This is a void value and may not be access at all
+			Value, //!< The encoded value is not a by-reference type but is a by-copy type and may not be reassigned.
+			Reference, //!< The encoded value is a non-const reference and may be assigned to.
+			ConstReference, //!< The encoded value is a const reference and may not be assigned to.
+			Pointer, //<! The encoded value is a pointer and assignments point to a new value, and dereferencing allows changing the value.
+			ConstPointer, //<! The encoded value is a pointer and assignments point to a new value, but dereferencing does not allow changing the value.
+		};
+
+		const TypeInfo* type; //!< The type encoded
+		Qualifier qualifier; //!< Qualifier to the type denoting access pattern
+
+		TypeRecord(const TypeInfo* t, Qualifier q) : type(t), qualifier(q) { }
+		TypeRecord() : type(nullptr), qualifier(Void) { }
+	};
+
+	namespace internal
+	{
+		//! \brief Construct a TypeRecord for a specific type by value
+		template <typename Type> struct make_type_record { static const TypeRecord type() { return TypeRecord(Get<Type>(), TypeRecord::Value); } };
+
+		//! \brief Construct a TypeRecord for a specific type by pointer
+		template <typename Type> struct make_type_record<Type*> { static const TypeRecord type() { return TypeRecord(Get<Type>(), TypeRecord::Pointer); } };
+
+		//! \brief Construct a TypeRecord for a specific type by const pointer
+		template <typename Type> struct make_type_record<const Type*> { static const TypeRecord type() { return TypeRecord(Get<Type>(), TypeRecord::ConstPointer); } };
+
+		//! \brief Construct a TypeRecord for a specific type by reference
+		template <typename Type> struct make_type_record<Type&> { static const TypeRecord type() { return TypeRecord(Get<Type>(), TypeRecord::Reference); } };
+
+		//! \brief Construct a TypeRecord for a specific type by const reference
+		template <typename Type> struct make_type_record<const Type&> { static const TypeRecord type() { return TypeRecord(Get<Type>(), TypeRecord::ConstReference); } };
+
+		//! \brief Construct a TypeRecord for void
+		template <> struct make_type_record<void> { static const TypeRecord type() { return TypeRecord(nullptr, TypeRecord::Void); } };
+
+		template <typename Type> struct make_any_helper;
+	}
+
+	//! \brief Holds any type of value that can be handled by the introspection system
+	class Any
+	{
+	private:
+		union
+		{
+			double _align_me; //!< force allignment
+			char m_Data[4 * sizeof(float)]; //!< large enough for 4 floats, e.g. a vec4
+			void* m_Ptr; //!< convenien
+		};
+		TypeRecord m_TypeRecord; //!< Type record information stored in this Any
 
 	public:
-		//! \brief Default constructor
-		AnyRef() : m_Type(nullptr), m_Ref(nullptr), m_IsConst(false) { }
+		//! \brief Checks if the value is const when dereferenced.
+		bool IsConst() const { return m_TypeRecord.qualifier == TypeRecord::ConstReference || m_TypeRecord.qualifier == TypeRecord::ConstPointer; }
 
-		//! \brief Create an any reference from a given pointer.
-		template <typename Type> inline AnyRef(Type* v) : m_Type(Get<Type>()), m_Ref(static_cast<void*>(v)), m_IsConst(false) { }
+		//! \brief Gets the TypeInfo for the value stored in the Any, if any
+		const TypeInfo* GetType() const { return m_TypeRecord.type; }
 
-		//! \brief Create an any reference from a given pointer.
-		template <typename Type> inline AnyRef(const Type* v) : m_Type(Get<Type>()), m_Ref(const_cast<void*>(static_cast<const void*>(v))), m_IsConst(true) { }
+		//! \brief Gets the TypeRecord information associated with the value stored in this Any
+		const TypeRecord& GetTypeRecord() const { return m_TypeRecord; }
 
-		//! \brief Create a null reference from a nullptr.
-		inline AnyRef(std::nullptr_t) : m_Type(nullptr), m_Ref(nullptr), m_IsConst(true) { }
+		//! \brief Retrieves a pointer to the type stored in this Any
+		void* GetPointer() const
+		{
+			switch (m_TypeRecord.qualifier)
+			{
+			case TypeRecord::Value: return const_cast<char*>(m_Data);
+			case TypeRecord::Reference:
+			case TypeRecord::ConstReference:
+			case TypeRecord::Pointer:
+			case TypeRecord::ConstPointer:
+				return m_Ptr;
+			default: return nullptr;
+			}
+		}
 
-		//! \brief Get the TypeInfo associated with this reference.
-		const TypeInfo* GetType() const { return m_Type; }
+		//! \brief Retrieves a pointer to the type stored in this Any adjusted by base type offset if necessary
+		inline void* GetPointer(const TypeInfo* type) const;
 
-		//! \brief Get the reference pointer associated with this reference.
-		void* GetRef() const { return m_Ref; }
+		//! \brief Retrieves a pointer to the type stored in this Any adjusted by base type offset if necessary
+		template <typename Type> Type* GetPointer() const { return static_cast<Type*>(GetPointer(Get<Type>())); }
 
-		//! \brief Test if this reference should be treated as constant
-		bool IsConst() const { return m_IsConst; }	
+		//! \brief Retrieves a reference to the type stored in this Any adjusted by base type offset if necessary
+		template <typename Type> Type& GetReference() const { return *static_cast<Type*>(GetPointer(Get<Type>())); }
+
+		template <typename Type> friend struct internal::make_any_helper;
 	};
+
+	namespace internal
+	{
+		template <typename Type> struct make_any_helper { static Any make(Type value) { Any any; static_assert(sizeof(Type) <= sizeof(any.m_Data), "Type too large for by-value Any"); any.m_TypeRecord = make_type_record<Type>::type(); new (&any.m_Data) Type(value); return any; } };
+		template <typename Type> struct make_any_helper<Type&> { static Any make(Type& value) { Any any; any.m_TypeRecord = make_type_record<Type&>::type(); any.m_Ptr = const_cast<typename std::remove_const<Type>::type*>(&value); return any; } };
+	}
+
+	//! \brief Convert any value into an Any
+	template <typename Type> Any make_any(Type value) { return internal::make_any_helper<typename std::remove_reference<Type>::type>::make(value); }
+
+	//! \brief Convert any value into an Any explicitly as a reference
+	template <typename Type> Any make_any_ref(Type& value) { return internal::make_any_helper<Type&>::make(value); }
+
+	//! \brief Convert any value into an Any explicitly as a reference
+	template <typename Type> Any make_any_ref(const Type& value) { return internal::make_any_helper<const Type&>::make(value); }
 
 	//! \brief Represents a member variable of a type. */
 	class Member
@@ -132,14 +211,14 @@ namespace Meta
 		virtual ~Member() { }
 
 		//! \brief Reimplement to get the value of a member variable.
-		//! \param obj Memory addres of the instance of the object the variable will be retrieved from.  It must be a valid instance of the owner type.
-		//! \param out Memory address into which the value is stored.  It must be of the correct size and alignment for the variable type.
-		virtual void DoGet(const void* obj, void* out) const = 0;
+		//! \param obj Object that owns the member.
+		//! \returns Value of the member.
+		virtual Any DoGet(const Any& obj) const = 0;
 
 		//! \brief Reimplement to set the value of a member variable.
-		//! \param obj Memory addres of the instance of the object the variable will be retrieved from.  It must be a valid instance of the owner type.
-		//! \param in Memory address from which the value is retrieved.  It must be a valid instance of the variable type.
-		virtual void DoSet(void* obj, const void* in) const = 0;
+		//! \param obj Object that owns the member.
+		//! \param in Value to set to.
+		virtual void DoSet(const Any& obj, const Any& in) const = 0;
 
 		//! \brief Sets the owner of the member variable.  Only meant to be called by TypeInfo.
 		void SetOwner(const TypeInfo* owner) { m_Owner = owner; }
@@ -159,56 +238,41 @@ namespace Meta
 
 		//! \brief Tests if the variable value can be retrieved into the given output any ref.
 		//! \param obj An instance of the owner type.
-		//! \param out An instance of variable type.
 		//! \returns True if Get is safe to call with these arguments, false otherwise.
-		inline bool CanGet(const AnyRef& obj, const AnyRef& out) const;
+		inline bool CanGet(const Any& obj) const;
 
 		//! \brief Retrieves the value of the member variable.
 		//! \param obj An instance of the owner type.
-		//! \param out An instance of the variable type.  It must already be instantiated, as this calls operator=, not a constructor.
-		inline void Get(const AnyRef& obj, const AnyRef& out) const;
+		inline Any Get(const Any& obj) const;
 
 		//! \brief Tests if the variable can be sets from the given input value.
 		//! \param obj An instance of the owner type.
 		//! \param in An instance of the variable type to set.
 		//! \returns True if Set is safe to call with these arguments, false otherwise.
-		inline bool CanSet(const AnyRef& obj, const AnyRef& in) const;
+		inline bool CanSet(const Any& obj, const Any& in) const;
 
 		//! \brief Sets the value of the member variable.
 		//! \param obj An instance of the owner type.
 		//! \param in An instance of the variable type to set.
-		inline void Set(const AnyRef& obj, const AnyRef& in) const;
+		inline void Set(const Any& obj, const Any& in) const;
 
 		friend class TypeInfo;
 	};
 
-	//! \brief Attempts to convert an any reference into a pointer to the actual C++ type.
-	//! \param any An any reference to try to convert.
-	//! \returns A pointer to the value if the conversion is correct, nullptr otherwise.
-	template <typename Type>
-	typename std::enable_if<std::is_pointer<Type>::value, Type>::type any_cast(const AnyRef& any)
+	namespace internal
 	{
-		assert(std::is_const<typename std::remove_pointer<Type>::type>::value || !any.IsConst());
-		return reinterpret_cast<Type>(any.GetRef());
+		template <typename Type> struct any_cast_helper { static const Type& cast(const Any& any) { return any.GetReference<Type>(); } };
+		template <typename Type> struct any_cast_helper<Type*> { static Type* cast(const Any& any) { return any.GetPointer<Type>(); } };
+		template <typename Type> struct any_cast_helper<const Type*> { static const Type *cast(const Any& any) { return any.GetPointer<Type>(); } };
+		template <typename Type> struct any_cast_helper<Type&> { static Type& cast(const Any& any) { return any.GetReference<Type>(); } };
+		template <typename Type> struct any_cast_helper<const Type&> { static const Type& cast(const Any& any) { return any.GetReference<Type>(); } };
 	}
 
 	//! \brief Attempts to convert an any reference into a pointer to the actual C++ type.
-	//! \param any An any reference to try to convert.
-	//! \returns A reference to the value if the conversion is correct, nullptr otherwise.
-	template <typename Type>
-	typename std::enable_if<std::is_reference<Type>::value, Type>::type any_cast(const AnyRef& any)
+	//! \param any An Any reference to try to convert.
+	template <typename Type> Type any_cast(const Any& any)
 	{
-		assert(std::is_const<typename std::remove_reference<Type>::type>::value || !any.IsConst());
-		return *reinterpret_cast<typename std::remove_reference<Type>::type*>(any.GetRef());
-	}
-
-	//! \brief Attempts to convert an any reference into a pointer to the actual C++ type.
-	//! \param any An any reference to try to convert.
-	//! \returns A value if the conversion is correct, nullptr otherwise.
-	template <typename Type>
-	typename std::enable_if<!std::is_pointer<Type>::value && !std::is_reference<Type>::value, Type>::type any_cast(const AnyRef& any)	
-	{
-		return *reinterpret_cast<Type*>(any.GetRef());
+		return internal::any_cast_helper<Type>::cast(any);
 	}
 
 	//! \brief A method attach to a type.
@@ -231,7 +295,8 @@ namespace Meta
 		//! \param out The memory location that the return value, if any, is stored.
 		//! \param argc The number of arguments to pass in to the method.
 		//! \param argv A list of any references for the arguments.
-		virtual void DoCall(const AnyRef& obj, const AnyRef& out, int argc, const AnyRef* argv) const = 0;
+		//! \returns The return value as an Any
+		virtual Any DoCall(const Any& obj, int argc, const Any* argv) const = 0;
 
 	public:
 		//! \brief Get the name of the method.
@@ -255,28 +320,15 @@ namespace Meta
 		//! \param out The location the return value is assigned to.  Must be a validate instance of the type.
 		//! \param argc The number of arguments to pass in to the method.
 		//! \param argv A list of any references for the arguments.
-		inline void Call(const AnyRef& obj, const AnyRef& out, int argc, const AnyRef* argv) const;
-
-		//! \brief Invoke the method (with a return value).
-		//! \param obj The instance of the object to call the method on.
-		//! \param argc The number of arguments to pass in to the method.
-		//! \param argv A list of any references for the arguments.
-		inline void Call(const AnyRef& obj, int argc, const AnyRef* argv) const;
-
-		//! \brief Invoke the method (with a return value).
-		//! \param obj The instance of the object to call the method on.
-		//! \param out The location the return value is assigned to.  Must be a validate instance of the type.
-		//! \param argc The number of arguments to pass in to the method.
-		//! \param argv A list of any references for the arguments.
-		//! \returns True if the parameters are valid for a call to succeed.
-		inline bool CanCall(const AnyRef& obj, const AnyRef& out, int argc, const AnyRef* argv) const;
+		//! \returns The return value as an Any
+		inline Any Call(const Any& obj, int argc, const Any* argv) const;
 
 		//! \brief Invoke the method (with a return value).
 		//! \param obj The instance of the object to call the method on.
 		//! \param argc The number of arguments to pass in to the method.
 		//! \param argv A list of any references for the arguments.
 		//! \returns True if the parameters are valid for a call to succeed.
-		inline bool CanCall(const AnyRef& obj, int argc, const AnyRef* argv) const;
+		inline bool CanCall(const Any& obj, int argc, const Any* argv) const;
 
 		friend class TypeInfo;
 	};
@@ -294,7 +346,21 @@ namespace Meta
 	public:
 		//! \brief Constructor for type info.
 		//! \param name The name of the type.
-		TypeInfo(const char* name) : m_Name(name) { }
+		TypeInfo(const char* name)
+		{
+			int nested = 0;
+			// trim off the namespaces from the name; account for possible template specializations
+			for (const char* m_Name = name + std::strlen(name) - 1; m_Name != name; --m_Name)
+			{
+				if (*m_Name == '>')
+					++nested;
+				else if (*m_Name == '<')
+					--nested;
+				else if (nested == 0 && *m_Name == ':')
+					break;
+			}
+		}
+
 		//! \brief Copy constructor for type info.
 		TypeInfo(const TypeInfo& type) : m_Name(type.m_Name), m_Bases(type.m_Bases), m_Members(type.m_Members), m_Methods(type.m_Methods)
 		{
@@ -347,7 +413,6 @@ namespace Meta
 
 			return nullptr;
 		}
-
 		
 		//! \brief Adjust a pointer of this type to a derived type.
 		//! \param base The base type to convert to.
@@ -400,23 +465,24 @@ namespace Meta
 		}
 	};
 
-	bool Member::CanGet(const AnyRef& obj, const AnyRef& out) const
+	inline void* Any::GetPointer(const TypeInfo* type) const
+	{
+		return m_TypeRecord.type->Adjust(type, GetPointer());
+	}
+
+	bool Member::CanGet(const Any& obj) const
 	{
 		if (!obj.GetType()->IsSameOrDerivedFrom(m_Owner))
-			return false;
-		if (m_Type != out.GetType())
-			return false;
-		if (out.IsConst())
 			return false;
 		return true;
 	}
 
-	void Member::Get(const AnyRef& obj, const AnyRef& out) const
+	Any Member::Get(const Any& obj) const
 	{
-		DoGet(obj.GetType()->Adjust(GetOwner(), obj.GetRef()), out.GetRef());
+		return DoGet(obj);
 	}
 
-	bool Member::CanSet(const AnyRef& obj, const AnyRef& in) const
+	bool Member::CanSet(const Any& obj, const Any& in) const
 	{
 		if (!IsMutable())
 			return false;
@@ -429,27 +495,19 @@ namespace Meta
 		return true;
 	}
 
-	void Member::Set(const AnyRef& obj, const AnyRef& in) const
+	void Member::Set(const Any& obj, const Any& in) const
 	{
-		DoSet(obj.GetType()->Adjust(GetOwner(), obj.GetRef()), in.GetRef());
+		DoSet(obj, in);
 	}
 
-	void Method::Call(const AnyRef& obj, const AnyRef& out, int argc, const AnyRef* argv) const
+	Any Method::Call(const Any& obj, int argc, const Any* argv) const
 	{
-		return DoCall(obj.GetType()->Adjust(GetOwner(), obj.GetRef()), out, argc, argv);
+		return DoCall(obj, argc, argv);
 	}
 
-	void Method::Call(const AnyRef& obj, int argc, const AnyRef* argv) const
-	{
-		return DoCall(obj.GetType()->Adjust(GetOwner(), obj.GetRef()), nullptr, argc, argv);
-	}
-
-	bool Method::CanCall(const AnyRef& obj, const AnyRef& out, int argc, const AnyRef* argv) const
+	bool Method::CanCall(const Any& obj, int argc, const Any* argv) const
 	{
 		if (!obj.GetType()->IsSameOrDerivedFrom(m_Owner))
-			return false;
-
-		if (out.GetType() != GetReturnType())
 			return false;
 
 		if (argc != GetArity())
@@ -460,11 +518,6 @@ namespace Meta
 				return false;
 
 		return true;
-	}
-
-	bool Method::CanCall(const AnyRef& obj, int argc, const AnyRef* argv) const
-	{
-		return CanCall(obj, nullptr, argc, argv);
 	}
 
 	namespace internal
@@ -478,16 +531,16 @@ namespace Meta
 		public:
 			TypeMember(const char* name, const TypeInfo* type, MemberType Type::*member) : Member(name, type), m_Member(member) { }
 
-			virtual bool IsMutable() const { return true; }
+			virtual bool IsMutable() const override { return true; }
 
-			virtual void DoGet(const void* obj, void* out) const
+			virtual Any DoGet(const Any& obj) const override
 			{
-				*static_cast<typename internal::to_pointer<MemberType>::type>(out) = static_cast<const Type*>(obj)->*m_Member;
+				return make_any<MemberType>(obj.GetPointer<Type>()->*m_Member);
 			}
 
-			virtual void DoSet(void* obj, const void* in) const
+			virtual void DoSet(const Any& obj, const Any& in) const override
 			{
-				static_cast<Type*>(obj)->*m_Member = *static_cast<const MemberType*>(in);
+				obj.GetPointer<Type>()->*m_Member = in.GetReference<MemberType>();
 			}
 		};
 
@@ -500,14 +553,14 @@ namespace Meta
 		public:
 			TypeMemberGetter(const char* name, const TypeInfo* type, Getter getter) : Member(name, type), m_Getter(getter) { }
 
-			virtual bool IsMutable() const { return false; }
+			virtual bool IsMutable() const override { return false; }
 
-			virtual void DoGet(const void* obj, void* out) const
+			virtual Any DoGet(const Any& obj) const override
 			{
-				*static_cast<typename internal::to_pointer<MemberType>::type>(out) = (reinterpret_cast<const Type*>(obj)->*m_Getter)();
+				return make_any<decltype((static_cast<Type*>(nullptr)->*m_Getter)())>(((obj.GetPointer<Type>())->*m_Getter)());
 			}
 
-			virtual void DoSet(void* obj, const void* in) const { }
+			virtual void DoSet(const Any& obj, const Any& in) const override { }
 		};
 
 		//! \brief A member that is accessed by a getter function and setter function.
@@ -519,28 +572,29 @@ namespace Meta
 		public:
 			TypeMemberGetterSetter(const char* name, const TypeInfo* type, Getter getter, Setter setter) : TypeMemberGetter<Type, MemberType, Getter>(name, type, getter), m_Setter(setter) { }
 
-			virtual bool IsMutable() const { return true; }
+			virtual bool IsMutable() const override { return true; }
 
-			virtual void DoSet(void* obj, const void* in) const
+			virtual void DoSet(const Any& obj, const Any& in) const override
 			{
-				(reinterpret_cast<Type*>(obj)->*m_Setter)(*static_cast<const MemberType*>(in));
+				(obj.GetPointer<Type>()->*m_Setter)(in.GetReference<MemberType>());
 			}
 		};
 
 		// helpers to deal with the possibility of a void return m_Type
 		template <typename Type, typename ReturnType> struct do_call0
 		{
-			static void call(ReturnType (Type::*method)(), Type* obj, ReturnType* out, int argc, const AnyRef* argv)
+			static Any call(ReturnType (Type::*method)(), Type* obj, int argc, const Any* argv)
 			{
-				*out = (obj->*method)();
+				return make_any<ReturnType>((obj->*method)());
 			}
 		};
 
 		template <typename Type> struct do_call0<Type, void>
 		{
-			static void call(void (Type::*method)(), Type* obj, void* out, int argc, const AnyRef* argv)
+			static Any call(void (Type::*method)(), Type* obj, int argc, const Any* argv)
 			{
 				(obj->*method)();
+				return Any();
 			}
 		};
 
@@ -551,31 +605,32 @@ namespace Meta
 			ReturnType (Type::*method)();
 
 		public:
-			virtual const TypeInfo* GetReturnType() const { return Get<ReturnType>(); }
+			virtual const TypeInfo* GetReturnType() const override { return Get<ReturnType>(); }
 
-			virtual const TypeInfo* GetParamType(int name) const { return nullptr; }
+			virtual const TypeInfo* GetParamType(int name) const override { return nullptr; }
 
-			virtual int GetArity() const { return 0; }
+			virtual int GetArity() const override { return 0; }
 
 			Method0(const char* name, ReturnType (Type::*method)()) : Method(name), method(method) { }
 
-			virtual void DoCall(const AnyRef& obj, const AnyRef& out, int argc, const AnyRef* argv) const { do_call0<Type, ReturnType>::call(method, static_cast<Type*>(obj.GetRef()), static_cast<ReturnType*>(out.GetRef()), argc, argv); }
+			virtual Any DoCall(const Any& obj, int argc, const Any* argv) const override { return do_call0<Type, ReturnType>::call(method, obj.GetPointer<Type>(), argc, argv); }
 		};
 
 		// helpers to deal with the possibility of a void return m_Type
 		template <typename Type, typename ReturnType, typename ParamType0> struct do_call1
 		{
-			static void call(ReturnType (Type::*method)(ParamType0), Type* obj, ReturnType* out, int argc, const AnyRef* argv)
+			static Any call(ReturnType (Type::*method)(ParamType0), Type* obj, int argc, const Any* argv)
 			{
-				*out = (obj->*method)(any_cast<ParamType0>(argv[0]));
+				return make_any<ReturnType>((obj->*method)(any_cast<ParamType0>(argv[0])));
 			}
 		};
 
 		template <typename Type, typename ParamType0> struct do_call1<Type, void, ParamType0>
 		{
-			static void call(void (Type::*method)(ParamType0), Type* obj, void* out, int argc, const AnyRef* argv)
+			static Any call(void (Type::*method)(ParamType0), Type* obj, int argc, const Any* argv)
 			{
 				(obj->*method)(any_cast<ParamType0>(argv[0]));
+				return Any();
 			}
 		};
 
@@ -586,31 +641,32 @@ namespace Meta
 			ReturnType (Type::*method)(ParamType0);
 
 		public:
-			virtual const TypeInfo* GetReturnType() const { return Get<ReturnType>(); }
+			virtual const TypeInfo* GetReturnType() const override { return Get<ReturnType>(); }
 
-			virtual const TypeInfo* GetParamType(int name) const { if (name == 0) return Get<ParamType0>(); else return nullptr; }
+			virtual const TypeInfo* GetParamType(int name) const override { if (name == 0) return Get<ParamType0>(); else return nullptr; }
 
-			virtual int GetArity() const { return 1; }
+			virtual int GetArity() const override { return 1; }
 
 			Method1(const char* name, ReturnType (Type::*method)(ParamType0)) : Method(name), method(method) { }
 
-			virtual void DoCall(const AnyRef& obj, const AnyRef& out, int argc, const AnyRef* argv) const { do_call1<Type, ReturnType, ParamType0>::call(method, static_cast<Type*>(obj.GetRef()), static_cast<ReturnType*>(out.GetRef()), argc, argv); }
+			virtual Any DoCall(const Any& obj, int argc, const Any* argv) const override { return do_call1<Type, ReturnType, ParamType0>::call(method, obj.GetPointer<Type>(), argc, argv); }
 		};
 
 		// helpers to deal with the possibility of a void return m_Type
 		template <typename Type, typename ReturnType, typename ParamType0, typename ParamType1> struct do_call2
 		{
-			static void call(ReturnType (Type::*method)(ParamType0, ParamType1), Type* obj, ReturnType* out, int argc, const AnyRef* argv)
+			static Any call(ReturnType (Type::*method)(ParamType0, ParamType1), Type* obj, int argc, const Any* argv)
 			{
-				*out = (obj->*method)(any_cast<ParamType0>(argv[0]), any_cast<ParamType1>(argv[1]));
+				return internal::make_any_helper<ReturnType>::make((obj->*method)(any_cast<ParamType0>(argv[0]), any_cast<ParamType1>(argv[1])));
 			}
 		};
 
 		template <typename Type, typename ParamType0, typename ParamType1>	struct do_call2<Type, void, ParamType0, ParamType1>
 		{
-			static void call(void (Type::*method)(ParamType0, ParamType1), Type* obj, void* out, int argc, const AnyRef* argv)
+			static Any call(void (Type::*method)(ParamType0, ParamType1), Type* obj, int argc, const Any* argv)
 			{
 				(obj->*method)(any_cast<ParamType0>(argv[0]), any_cast<ParamType1>(argv[1]));
+				return Any();
 			}
 		};
 
@@ -621,15 +677,15 @@ namespace Meta
 			ReturnType (Type::*method)(ParamType0, ParamType1);
 
 		public:
-			virtual const TypeInfo* GetReturnType() const { return Get<ReturnType>(); }
+			virtual const TypeInfo* GetReturnType() const override { return Get<ReturnType>(); }
 
-			virtual const TypeInfo* GetParamType(int name) const { if (name == 0) return Get<ParamType0>(); else if (name == 1) return Get<ParamType1>(); else return nullptr; }
+			virtual const TypeInfo* GetParamType(int name) const override { if (name == 0) return Get<ParamType0>(); else if (name == 1) return Get<ParamType1>(); else return nullptr; }
 
-			virtual int GetArity() const { return 2; }
+			virtual int GetArity() const override { return 2; }
 
 			Method2(const char* name, ReturnType (Type::*method)(ParamType0, ParamType1)) : Method(name), method(method) { }
 
-			virtual void DoCall(const AnyRef& obj, const AnyRef& out, int argc, const AnyRef* argv) const { do_call2<Type, ReturnType, ParamType0, ParamType1>::call(method, static_cast<Type*>(obj.GetRef()), static_cast<ReturnType*>(out.GetRef()), argc, argv); }
+			virtual Any DoCall(const Any& obj, int argc, const Any* argv) const override { return do_call2<Type, ReturnType, ParamType0, ParamType1>::call(method, obj.GetPointer<Type>(), argc, argv); }
 		};
 
 		//! \brief Holder for TypeInfo external to a type, used when adding introspection to types that cannot be modified.
@@ -650,23 +706,23 @@ namespace Meta
 			//! \brief Add a read-write member definition to this type which will be accessed directly.
 			//! \param name The name of the member.
 			//! \param member A pointer to the member.
-			template <typename MemberType> typename std::enable_if<!std::is_member_function_pointer<MemberType>::value, TypedInfo&>::type member(const char* name, MemberType Type::*member) { m_Members.push_back(new TypeMember<Type, MemberType>(name, Get<MemberType>(), member)); return *this; }
+			template <typename MemberType> typename std::enable_if<!std::is_member_function_pointer<MemberType>::value, TypedInfo&>::type member(const char* name, MemberType Type::*member) { m_Members.push_back(new TypeMember<Type, typename std::remove_reference<MemberType>::type>(name, Get<MemberType>(), member)); return *this; }
 
 			//! \brief Add a read-only member definition to this type which will be accessed by a getter member function.
 			//! \param name The name of the member.
 			//! \param getter A pointer to the getter member function.
-			template <typename MemberType> TypedInfo& member(const char* name, MemberType (Type::*getter)() const) { m_Members.push_back(new TypeMemberGetter<Type, MemberType, MemberType (Type::*)() const>(name, Get<MemberType>(), getter)); return *this; }
+			template <typename MemberType> TypedInfo& member(const char* name, MemberType (Type::*getter)() const) { m_Members.push_back(new TypeMemberGetter<Type, typename std::remove_reference<MemberType>::type, MemberType (Type::*)() const>(name, Get<MemberType>(), getter)); return *this; }
 
 			//! \brief Add a read-only member definition to this type which will be accessed by a getter member function.  Allows passing nullptr as a third parameter to indicate the lack of a setter.
 			//! \param name The name of the member.
 			//! \param getter A pointer to the getter member function.
-			template <typename MemberType> TypedInfo& member(const char* name, MemberType (Type::*getter)() const, std::nullptr_t) { m_Members.push_back(new TypeMemberGetter<Type, MemberType, MemberType (Type::*)() const>(name, Get<MemberType>(), getter)); return *this; }
+			template <typename MemberType> TypedInfo& member(const char* name, MemberType (Type::*getter)() const, std::nullptr_t) { m_Members.push_back(new TypeMemberGetter<Type, typename std::remove_reference<MemberType>::type, MemberType (Type::*)() const>(name, Get<MemberType>(), getter)); return *this; }
 
 			//! \brief Add a read-write member definition to this type which will be accessed by getter and setter member functions.
 			//! \param name The name of the member.
 			//! \param getter A pointer to the getter member function.
 			//! \param setter A pointer to the setter member function.
-			template <typename MemberType, typename SetterType, typename SetterReturnType> TypedInfo& member(const char* name, MemberType (Type::*getter)() const, SetterReturnType (Type::*setter)(SetterType)) { m_Members.push_back(new TypeMemberGetterSetter<Type, MemberType, MemberType (Type::*)() const, SetterReturnType (Type::*)(SetterType)>(name, Get<MemberType>(), getter, setter)); return *this; }
+			template <typename MemberType, typename SetterType, typename SetterReturnType> TypedInfo& member(const char* name, MemberType (Type::*getter)() const, SetterReturnType (Type::*setter)(SetterType)) { m_Members.push_back(new TypeMemberGetterSetter<Type, typename std::remove_reference<MemberType>::type, MemberType (Type::*)() const, SetterReturnType (Type::*)(SetterType)>(name, Get<MemberType>(), getter, setter)); return *this; }
 
 			// add method definitions for a m_Type
 			template <typename ReturnType> TypedInfo& method(const char* name, ReturnType (Type::*method)()) { m_Methods.push_back(new Method0<Type, ReturnType>(name, method)); return *this; }

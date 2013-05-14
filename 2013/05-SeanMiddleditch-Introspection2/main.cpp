@@ -5,6 +5,7 @@
 #include "Meta.h"
 
 #include <cassert>
+#include <string>
 
 // a test class
 class A1
@@ -30,10 +31,14 @@ public:
 class A2
 {
 	int d;
+	std::string name;
 
 public:
 	int getD() const { return d; }
 	void setD(int _) { d = _; }
+
+	void setName(const std::string& _) { name = _; }
+	const std::string& getName() const { return name; }
 
 	void gaz() { assert(d == 0xDEADBEEF); }
 };
@@ -59,6 +64,8 @@ namespace TestC
 }
 
 // create m_Type infos
+META_DEFINE_EXTERN(std::string);
+
 META_DEFINE(A1)
 	.member("a", &A1::a) // note that we can bind private m_Members with this style of Get
 	.member("b", &A1::b)
@@ -71,6 +78,8 @@ META_DEFINE(A1)
 
 META_DEFINE_EXTERN(A2)
 	.member("d", &A2::getD, &A2::setD)
+	.member("name", &A2::getName, &A2::setName)
+	.method("setName", &A2::setName)
 	.method("gaz", &A2::gaz);
 
 META_DEFINE(B)
@@ -84,66 +93,75 @@ META_DEFINE_EXTERN(TestC::C)
 	.member("y", &TestC::C::y);
 
 // tests that a value can be round-tripped into a member variable
-template <typename T, typename U> void test_rw_member(T& obj, const char* name, const U& value)
+template <typename T, typename U> static void test_rw_member(T& obj, const char* name, const U& value)
 {
 	auto m = Meta::Get(obj)->FindMember(name);
 	assert(m != nullptr);
-	Meta::AnyRef a(&value);
-	assert(m->CanSet(&obj, a));
-	m->Set(&obj, a);
-	a = nullptr;
-	U test;
-	assert(m->CanGet(&obj, &test));
-	m->Get(&obj, &test);
+	Meta::Any a = Meta::make_any(&value);
+	assert(m->CanSet(Meta::make_any(&obj), a));
+	m->Set(Meta::make_any(&obj), a);
+	assert(m->CanGet(Meta::make_any(&obj)));
+	U test = Meta::any_cast<U>(m->Get(Meta::make_any(&obj)));
 	assert(test == value);
 }
 
 // tests that a member variable has a particular value
-template <typename T, typename U> void test_ro_member(T& obj, const char* name, const U& value)
+template <typename T, typename U> static void test_ro_member(T& obj, const char* name, const U& value)
 {
 	auto m = Meta::Get(obj)->FindMember(name);
 	assert(m != nullptr);
-	U test;
-	assert(m->CanGet(&obj, &test));
-	m->Get(&obj, &test);
+	assert(m->CanGet(Meta::make_any(&obj)));
+	U test = Meta::any_cast<U>(m->Get(Meta::make_any(&obj)));
 	assert(test == value);
 }
 
 // tests that a method with no return value or parameters can be invoked
-template <typename T> void test_method(T& obj, const char* name)
+template <typename T> static void test_method(T& obj, const char* name)
 {
 	auto m = Meta::Get(obj)->FindMethod(name);
 	assert(m != nullptr);
-	assert(m->CanCall(&obj, 0, nullptr));
-	m->Call(&obj, 0, nullptr);
+	assert(m->CanCall(Meta::make_any(&obj), 0, nullptr));
+	m->Call(Meta::make_any(&obj), 0, nullptr);
 }
 
 // tests that a method with one parameter results in a specific return value
-template <typename T, typename R, typename P> void test_method(T& obj, const char* name, const R& value, const P& p)
+template <typename T, typename R, typename P> static void test_method(T& obj, const char* name, const R& value, const P& p)
 {
 	auto m = Meta::Get(obj)->FindMethod(name);
 	assert(m != nullptr);
-	Meta::AnyRef argv[1] = { &p };
-	R test;
-	assert(m->CanCall(&obj, &test, 1, argv));
-	m->Call(&obj, &test, 1, argv);
-	assert(test == value);
+	Meta::Any argv[1] = { Meta::make_any_ref(p) };
+	assert(m->CanCall(Meta::make_any(&obj), 1, argv));
+	auto r = m->Call(Meta::make_any(&obj), 1, argv);
+	assert(r.GetType() == Meta::Get<R>());
+	assert(r.GetReference<R>() == value);
 }
 
 // tests that a method with two parameters results in a specific return value
-template <typename T, typename R, typename P, typename P2> void test_method(T& obj, const char* name, const R& value, const P& p, const P2& p2)
+template <typename T, typename R, typename P, typename P2> static void test_method(T& obj, const char* name, const R& value, const P& p, const P2& p2)
 {
 	auto m = Meta::Get(obj)->FindMethod(name);
 	assert(m != nullptr);
-	Meta::AnyRef argv[2] = { &p, &p2 };
-	R test;
-	assert(m->CanCall(&obj, &test, 2, argv));
-	m->Call(&obj, &test, 2, argv);
-	assert(test == value);
+	Meta::Any argv[2] = { Meta::make_any(&p), Meta::make_any(&p2) };
+	assert(m->CanCall(Meta::make_any(&obj), 2, argv));
+	auto r = m->Call(Meta::make_any(&obj), 2, argv);
+	assert(r.GetType() == Meta::Get<R>());
+	assert(r.GetReference<R>() == value);
 }
 
-// test routine
-int main(int argc, char* argv[])
+static void test_any()
+{
+	Meta::Any a;
+	const int& ir = 0xDEADC0DE;
+	a = Meta::make_any_ref(ir);
+	assert(a.GetPointer() == &ir);
+
+	int i = 0xBEEF1337;
+	a = Meta::make_any(i);
+	assert(a.GetPointer() != &i);
+	assert(*reinterpret_cast<int*>(a.GetPointer()) == i);
+}
+
+static void test_meta()
 {
 	B b;
 	test_rw_member(b, "a", 12);
@@ -154,6 +172,9 @@ int main(int argc, char* argv[])
 	test_rw_member(b, "a4", -7);
 	test_rw_member(b, "b", 191.73f);
 	test_rw_member(b, "c", -0.5f);
+	test_rw_member(b, "name", std::string("testme"));
+	b.setName("hiya");
+	test_ro_member(b, "name", std::string("hiya"));
 	b.setD(91317);
 	test_ro_member(b, "d", b.getD());
 	b.setD(0xDEADBEEF);
@@ -165,4 +186,11 @@ int main(int argc, char* argv[])
 	test_method(b, "bar", 5, 11.f);
 	test_method(b, "baz", 0.f, 5.0, (char)7);
 	test_method(b, "baz", 10.f, 20.0, (char)7);
+}
+
+// test routine
+int main(int argc, char* argv[])
+{
+	test_any();
+	test_meta();
 }
