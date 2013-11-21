@@ -1,9 +1,9 @@
 DigiPen Engine Architecture Club
 ================================
 
-Videos of many of the club's talks are available at
+Videos of many of the club's talks are available at:
 
-    https://www.youtube.com/user/GameEngineArchitects
+  https://www.youtube.com/user/GameEngineArchitects
 
 These materials are made available for the purpose of helping
 game developers improve their art.
